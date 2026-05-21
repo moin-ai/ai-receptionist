@@ -10,6 +10,8 @@ const { google } = require('googleapis');
 const fetch = require('node-fetch');
 const pdf = require('pdf-parse');
 const nodemailer = require('nodemailer');
+const fs = require('fs');
+const path = require('path');
 require('dotenv').config();
 
 const app = express();
@@ -26,11 +28,48 @@ const twilioClient = twilio(
   process.env.TWILIO_AUTH_TOKEN
 );
 
-// In-memory storage
-const businessContexts = {};
+// ============================================================================
+// PERSISTENCE HELPERS
+// ============================================================================
+
+const DATA_DIR = path.join(__dirname, 'data');
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+
+function loadJSON(filename, fallback) {
+  const file = path.join(DATA_DIR, filename);
+  try {
+    if (fs.existsSync(file)) return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (e) {
+    console.error(`Error loading ${filename}:`, e.message);
+  }
+  return fallback;
+}
+
+function saveJSON(filename, data) {
+  try {
+    fs.writeFileSync(path.join(DATA_DIR, filename), JSON.stringify(data, null, 2));
+  } catch (e) {
+    console.error(`Error saving ${filename}:`, e.message);
+  }
+}
+
+// Load businesses: file first, then BUSINESS_CONFIG env var as fallback
+const businessContexts = loadJSON('businesses.json', {});
+if (Object.keys(businessContexts).length === 0 && process.env.BUSINESS_CONFIG) {
+  try {
+    const envBusinesses = JSON.parse(process.env.BUSINESS_CONFIG);
+    Object.assign(businessContexts, envBusinesses);
+    console.log(`✅ Loaded ${Object.keys(envBusinesses).length} business(es) from BUSINESS_CONFIG env var`);
+  } catch (e) {
+    console.error('Error parsing BUSINESS_CONFIG env var:', e.message);
+  }
+} else if (Object.keys(businessContexts).length > 0) {
+  console.log(`✅ Loaded ${Object.keys(businessContexts).length} business(es) from data/businesses.json`);
+}
+
 const conversationHistory = {};
-const bookings = [];
-const callLogs = [];
+const bookings = loadJSON('bookings.json', []);
+const callLogs = loadJSON('calllogs.json', []);
 
 // Google OAuth setup
 const BASE_URL = (process.env.BASE_URL || 'http://localhost:3000').replace(/\/$/, '');
@@ -135,10 +174,15 @@ app.post('/api/setup-business', async (req, res) => {
       googleCalendarId: req.body.googleCalendarId || 'primary',
     };
 
+    // Persist to file and generate env var value
+    saveJSON('businesses.json', businessContexts);
+    const envVarValue = JSON.stringify(businessContexts);
+
     res.json({
       success: true,
       message: `Business "${businessName}" setup complete`,
       contextLength: businessContext.length,
+      envVarValue,
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -164,6 +208,7 @@ app.post('/api/incoming-call', async (req, res) => {
     startTime: new Date(),
     messages: [],
   });
+  saveJSON('calllogs.json', callLogs);
 
   const business = businessContexts[businessId];
   if (!business) {
@@ -222,6 +267,7 @@ app.post('/api/process-speech', async (req, res) => {
     if (aiResponse.booking) {
       twiml.say('Great! I am booking your appointment now. You will receive a confirmation shortly.');
       bookings.push(aiResponse.booking);
+      saveJSON('bookings.json', bookings);
     }
 
     const gather = twiml.gather({
@@ -541,7 +587,15 @@ app.get('/', (req, res) => {
           });
           const result = await response.json();
           const s = document.getElementById('setupStatus');
-          s.innerText = result.message || result.error;
+          if (result.success) {
+            s.innerHTML = \`✅ \${result.message}<br><br>
+              <strong>📌 To persist across deploys, add this to Render Environment Variables:</strong><br>
+              <strong>Key:</strong> <code>BUSINESS_CONFIG</code><br>
+              <strong>Value:</strong><br>
+              <textarea onclick="this.select()" style="width:100%;height:80px;font-size:11px;margin-top:5px;">\${result.envVarValue}</textarea>\`;
+          } else {
+            s.innerText = result.error;
+          }
           s.style.display = 'block';
         }
 
