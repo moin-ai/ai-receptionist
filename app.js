@@ -33,10 +33,12 @@ const bookings = [];
 const callLogs = [];
 
 // Google OAuth setup
+const BASE_URL = (process.env.BASE_URL || 'http://localhost:3000').replace(/\/$/, '');
+
 const oauth2Client = new google.auth.OAuth2(
   process.env.GOOGLE_CLIENT_ID,
   process.env.GOOGLE_CLIENT_SECRET,
-  `${process.env.BASE_URL || 'http://localhost:3000'}/oauth2callback`
+  `${BASE_URL}/oauth2callback`
 );
 
 if (process.env.GOOGLE_REFRESH_TOKEN) {
